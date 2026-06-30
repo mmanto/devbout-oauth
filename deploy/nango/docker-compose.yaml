@@ -1,0 +1,64 @@
+# Self-hosted Nango for devbout-oauth.
+#
+#   cd deploy/nango
+#   cp .env.example .env   # then fill NANGO_ENCRYPTION_KEY + NANGO_SECRET_KEY
+#   docker compose up -d
+#
+# Backend API:  http://localhost:3003   (NANGO_HOST for consumers)
+# Connect UI:   http://localhost:3009
+#
+# NOTE: the bundled Postgres uses container-local storage and is fine for
+# dev/staging. For production point NANGO_DB_* at a managed Postgres.
+services:
+  nango-db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: ${NANGO_DB_USER:-nango}
+      POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD:-nango}
+      POSTGRES_DB: ${NANGO_DB_NAME:-nango}
+    volumes:
+      - nango-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NANGO_DB_USER:-nango}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nango-redis:
+    image: redis:7
+    restart: always
+
+  nango-server:
+    image: nangohq/nango-server:hosted
+    restart: always
+    depends_on:
+      nango-db:
+        condition: service_healthy
+      nango-redis:
+        condition: service_started
+    ports:
+      - "3003:3003"   # backend API
+      - "3009:3009"   # Connect UI
+    environment:
+      # ── secrets (set in .env) ──
+      NANGO_ENCRYPTION_KEY: ${NANGO_ENCRYPTION_KEY}
+      NANGO_SECRET_KEY: ${NANGO_SECRET_KEY}
+      # ── database ──
+      NANGO_DB_USER: ${NANGO_DB_USER:-nango}
+      NANGO_DB_PASSWORD: ${NANGO_DB_PASSWORD:-nango}
+      NANGO_DB_HOST: nango-db
+      NANGO_DB_PORT: 5432
+      NANGO_DB_NAME: ${NANGO_DB_NAME:-nango}
+      # ── redis ──
+      NANGO_REDIS_URL: redis://nango-redis:6379
+      # ── URLs ──
+      NANGO_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+      NANGO_PUBLIC_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+      # ── Connect UI ──
+      FLAG_SERVE_CONNECT_UI: "true"
+      NANGO_CONNECT_UI_PORT: 3009
+      NANGO_PUBLIC_CONNECT_URL: ${NANGO_PUBLIC_CONNECT_URL:-http://localhost:3009}
+
+volumes:
+  nango-db-data:
