@@ -4,8 +4,9 @@
 #   cp .env.example .env   # then fill NANGO_ENCRYPTION_KEY + NANGO_SECRET_KEY
 #   docker compose up -d
 #
-# Backend API:  http://localhost:3003   (NANGO_HOST for consumers)
-# Connect UI:   http://localhost:3009
+# v0.70+ runs everything on internal port 8080:
+#   Dashboard + API:  http://localhost:3003  (mapeado a 8080 internamente)
+#   Connect UI:       http://localhost:3009  (SPA embebida en el popup/iframe de login)
 #
 # NOTE: the bundled Postgres uses container-local storage and is fine for
 # dev/staging. For production point NANGO_DB_* at a managed Postgres.
@@ -32,14 +33,19 @@ services:
   nango-server:
     image: nangohq/nango-server:hosted
     restart: always
+    # DNS explícito: el host resuelve vía IPv6 link-local (fe80::1%wlan0), que
+    # Docker no puede propagar a los containers, dejándolos sin salida a
+    # internet (oauth2.googleapis.com, login.microsoftonline.com, etc).
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       nango-db:
         condition: service_healthy
       nango-redis:
         condition: service_started
     ports:
-      - "3003:3003"   # backend API
-      - "3009:3009"   # Connect UI
+      - "3003:8080"   # dashboard + API (v0.70+ escucha en 8080 internamente)
     environment:
       # ── secrets (set in .env) ──
       NANGO_ENCRYPTION_KEY: ${NANGO_ENCRYPTION_KEY}
@@ -55,10 +61,18 @@ services:
       # ── URLs ──
       NANGO_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
       NANGO_PUBLIC_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
-      # ── Connect UI ──
-      FLAG_SERVE_CONNECT_UI: "true"
-      NANGO_CONNECT_UI_PORT: 3009
-      NANGO_PUBLIC_CONNECT_URL: ${NANGO_PUBLIC_CONNECT_URL:-http://localhost:3009}
+
+  # El image "hosted" trae el build de @nangohq/connect-ui (packages/connect-ui/dist)
+  # pero no lo sirve. Lo exponemos con un server estático mínimo (sin deps) en :3009,
+  # que es donde @nangohq/frontend espera encontrar el popup/iframe de Connect UI.
+  nango-connect-ui:
+    image: nangohq/nango-server:hosted
+    restart: always
+    volumes:
+      - ./connect-ui-server.mjs:/connect-ui-server.mjs:ro
+    command: ["node", "/connect-ui-server.mjs"]
+    ports:
+      - "3009:3009"
 
 volumes:
   nango-db-data:
