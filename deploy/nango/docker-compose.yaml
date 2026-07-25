@@ -77,6 +77,12 @@ services:
       # ── URLs ──
       NANGO_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
       NANGO_PUBLIC_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+      # Usada por el dashboard (y por su feature de "probar conexión") para
+      # saber dónde abrir el popup del Connect UI — sin esto cae al default
+      # localhost:3009 de Nango, que en el browser de quien prueba resuelve a
+      # SU PROPIA máquina, no al servidor (mismo síntoma que el choque de
+      # puerto del túnel SSH visto antes).
+      NANGO_PUBLIC_CONNECT_URL: ${NANGO_PUBLIC_CONNECT_URL:-http://localhost:3009}
     networks:
       - default
       - shared
