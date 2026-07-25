@@ -2,6 +2,7 @@
 #
 #   cd deploy/nango
 #   cp .env.example .env   # then fill NANGO_ENCRYPTION_KEY + NANGO_SECRET_KEY
+#   docker network create nango_network   # una sola vez (red compartida, ver abajo)
 #   docker compose up -d
 #
 # v0.70+ runs everything on internal port 8080:
@@ -10,6 +11,15 @@
 #
 # NOTE: the bundled Postgres uses container-local storage and is fine for
 # dev/staging. For production point NANGO_DB_* at a managed Postgres.
+#
+# Nango es una instancia COMPARTIDA entre las apps que consumen
+# devbout-oauth (gestion.ar, nexsure, ...) — no vendorizada en cada una. Los
+# consumidores en el mismo host se unen a `nango_network` (externa, creada a
+# mano arriba) y le hablan a `nango-server` por nombre de servicio Docker
+# (`http://nango-server:8080`) en vez de `host.docker.internal:3003`. La red
+# es `external: true` en todos los compose que la usan para que un
+# `docker compose down` de un solo proyecto no la destruya y huerfane a los
+# demás (mismo motivo que `traefik_public` en gestion.ar/docker-compose.yml).
 services:
   nango-db:
     image: postgres:16
@@ -61,6 +71,9 @@ services:
       # ── URLs ──
       NANGO_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
       NANGO_PUBLIC_SERVER_URL: ${NANGO_SERVER_URL:-http://localhost:3003}
+    networks:
+      - default
+      - shared
 
   # El image "hosted" trae el build de @nangohq/connect-ui (packages/connect-ui/dist)
   # pero no lo sirve. Lo exponemos con un server estático mínimo (sin deps) en :3009,
@@ -76,3 +89,13 @@ services:
 
 volumes:
   nango-db-data:
+
+networks:
+  default:
+    name: nango_default
+  # Compartida con los consumidores (gestion.ar, nexsure, ...) en el mismo
+  # host — ver el comentario arriba. Crear una vez a mano:
+  #   docker network create nango_network
+  shared:
+    name: nango_network
+    external: true
