@@ -20,6 +20,12 @@
 # es `external: true` en todos los compose que la usan para que un
 # `docker compose down` de un solo proyecto no la destruya y huerfane a los
 # demás (mismo motivo que `traefik_public` en gestion.ar/docker-compose.yml).
+#
+# Exposición pública en producción (dominio real + Traefik compartido del
+# servidor, TLS automático): ver docker-compose.prod.yaml — no forma parte
+# de este archivo para no acoplar el dev local (que no tiene Traefik) a la
+# red externa `traefik_public`. Uso:
+#   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
 services:
   nango-db:
     image: postgres:16

@@ -1,0 +1,67 @@
+# Overrides de producción — exposición pública de Nango vía el Traefik
+# standalone compartido del servidor (mismo que usa gestion.ar/docker-compose.prod.yml,
+# ver docs/ops/DEPLOYMENT.md ahí).
+#
+# Uso:
+#   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up -d
+#
+# Requiere en el servidor:
+#   - Traefik standalone corriendo (container "traefik", red traefik_public
+#     externa ya creada).
+#   - DNS de ambos hosts apuntando a este servidor (api.nango.* es un
+#     subdominio de segundo nivel — necesita su propio registro, no lo
+#     cubre un wildcard de un solo nivel tipo *.tudominio.pro).
+#   - NANGO_DASHBOARD_AUTH_USERS en .env (htpasswd, ver .env.example).
+#
+# api.nango.<dominio> → nango-server, separado en DOS routers por prioridad:
+# uno público (sin auth) para /oauth,/connect,/connections,/environment —
+# lo que llama el browser del usuario final y el backend consumidor, cada
+# uno con su propio auth (Bearer secret / sessionToken) — y uno catch-all
+# con BasicAuth para el resto (dashboard, signup, login). Un BasicAuth a
+# ciegas sobre todo el Host() rompe el primer grupo: el header Authorization
+# de BasicAuth choca con el que ya usan esas rutas.
+# nango.<dominio> → nango-connect-ui, simple, sin auth (solo el shell
+# estático del popup/iframe de login).
+services:
+  nango-server:
+    networks:
+      - default
+      - shared
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nango-api-public.rule=Host(`api.nango.intellify.pro`) && (PathPrefix(`/oauth`) || PathPrefix(`/connect`) || PathPrefix(`/connections`) || PathPrefix(`/environment`))"
+      - "traefik.http.routers.nango-api-public.entrypoints=websecure"
+      - "traefik.http.routers.nango-api-public.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nango-api-public.priority=20"
+      - "traefik.http.routers.nango-api-public.service=nango-api"
+      - "traefik.http.routers.nango-api-dashboard.rule=Host(`api.nango.intellify.pro`)"
+      - "traefik.http.routers.nango-api-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.nango-api-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nango-api-dashboard.priority=10"
+      - "traefik.http.routers.nango-api-dashboard.middlewares=nango-dashboard-auth"
+      - "traefik.http.routers.nango-api-dashboard.service=nango-api"
+      - "traefik.http.middlewares.nango-dashboard-auth.basicauth.users=${NANGO_DASHBOARD_AUTH_USERS}"
+      - "traefik.http.services.nango-api.loadbalancer.server.port=8080"
+
+  nango-connect-ui:
+    networks:
+      - default
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nango-connect.rule=Host(`nango.intellify.pro`)"
+      - "traefik.http.routers.nango-connect.entrypoints=websecure"
+      - "traefik.http.routers.nango-connect.tls.certresolver=letsencrypt"
+      - "traefik.http.services.nango-connect.loadbalancer.server.port=3009"
+
+networks:
+  shared:
+    name: nango_network
+    external: true
+  # Traefik standalone de infra/traefik/ (gestion.ar) — mismo servidor,
+  # compartido entre proyectos. external porque no la posee ningún compose
+  # project puntual (ver traefik_public en gestion.ar/docker-compose.yml).
+  traefik:
+    name: traefik_public
+    external: true

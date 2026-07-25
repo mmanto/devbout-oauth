@@ -21,11 +21,26 @@ devbout-oauth @ git+https://<your-remote>/devbout-oauth@v0.2.0
 ```bash
 cd deploy/nango
 cp .env.example .env        # fill NANGO_ENCRYPTION_KEY + NANGO_SECRET_KEY
+docker network create nango_network   # once — shared with consumers on this host
 docker compose up -d
 ```
 
-- Backend API → `http://localhost:3003` (this is `NANGO_HOST` for consumers)
+- Backend API → `http://localhost:3003` (see note below re: `NANGO_HOST`)
 - Connect UI → `http://localhost:3009`
+
+Sign up in the dashboard (`http://localhost:3003`) the first time — self-hosted
+has no seeded account. **The `NANGO_SECRET_KEY` env var in `.env` does NOT
+become the API secret**: Nango generates a random one per environment when you
+sign up (dashboard → Settings → Environment). Use *that* value as `NANGO_HOST`'s
+sibling `NANGO_SECRET_KEY` in each consumer app, not the one from `deploy/nango/.env`.
+
+**Production**: the Connect UI and the API need to be reachable from a real
+user's browser, not just from the host's Docker network — see
+`deploy/nango/docker-compose.prod.yaml` for exposing both behind a shared
+Traefik with public subdomains, with the dashboard behind BasicAuth and the
+consumer-facing routes (`/oauth`, `/connect`, `/connections`, `/environment`)
+left open (a blanket BasicAuth over the whole host breaks those — they already
+authenticate via `Authorization: Bearer <secret>` or a one-time session token).
 
 ## 2. Create the integrations in Nango
 
