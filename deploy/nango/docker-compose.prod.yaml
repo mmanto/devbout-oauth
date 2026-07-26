@@ -15,18 +15,22 @@
 #
 # api.nango.<dominio> → nango-server, separado en DOS routers por prioridad:
 # uno público (sin auth) para /oauth,/connect,/connections,/environment,
-# /integrations — lo que llama el browser del usuario final y el backend
-# consumidor, cada uno con su propio auth (Bearer secret / sessionToken) —
-# y uno catch-all con BasicAuth para el resto (dashboard, signup, login). Un
-# BasicAuth a ciegas sobre todo el Host() rompe el primer grupo: el header
-# Authorization de BasicAuth choca con el que ya usan esas rutas.
+# /integrations,/providers — lo que llama el browser del usuario final y el
+# backend consumidor, cada uno con su propio auth (Bearer secret /
+# sessionToken) — y uno catch-all con BasicAuth para el resto (dashboard,
+# signup, login). Un BasicAuth a ciegas sobre todo el Host() rompe el
+# primer grupo: el header Authorization de BasicAuth choca con el que ya
+# usan esas rutas.
 #
-# /integrations sin auth: la Connect UI (embebida en el browser del usuario
-# final, sin la secret key) la llama directo para listar las integraciones
-# permitidas de la sesión (ver GET /integrations en @nangohq/connect-ui) —
-# sin esto cae al router con BasicAuth, el browser lo ve como fallo de CORS
-# (401 de Traefik sin Access-Control-Allow-Origin) y la Connect UI muestra
-# "An error occurred. Please refresh your page or contact our support."
+# /integrations y /providers/:provider sin auth: la Connect UI (embebida en
+# el browser del usuario final, sin la secret key) las llama directo para
+# listar las integraciones permitidas de la sesión y el detalle del
+# provider (ver @nangohq/connect-ui, llamadas GET /integrations y GET
+# /providers/:provider) — sin esto caen al router con BasicAuth, el browser
+# lo ve como fallo de CORS (401 de Traefik sin Access-Control-Allow-Origin)
+# y la Connect UI muestra "An error occurred. Please refresh your page or
+# contact our support." Si Nango agrega otra ruta pública nueva en el
+# futuro y vuelve a aparecer este síntoma, se soluciona igual: agregarla acá.
 # nango.<dominio> → nango-connect-ui, simple, sin auth (solo el shell
 # estático del popup/iframe de login).
 services:
@@ -37,7 +41,7 @@ services:
       - traefik
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.nango-api-public.rule=Host(`api.nango.intellify.pro`) && (PathPrefix(`/oauth`) || PathPrefix(`/connect`) || PathPrefix(`/connections`) || PathPrefix(`/environment`) || PathPrefix(`/integrations`))"
+      - "traefik.http.routers.nango-api-public.rule=Host(`api.nango.intellify.pro`) && (PathPrefix(`/oauth`) || PathPrefix(`/connect`) || PathPrefix(`/connections`) || PathPrefix(`/environment`) || PathPrefix(`/integrations`) || PathPrefix(`/providers`))"
       - "traefik.http.routers.nango-api-public.entrypoints=websecure"
       - "traefik.http.routers.nango-api-public.tls.certresolver=letsencrypt"
       - "traefik.http.routers.nango-api-public.priority=20"
