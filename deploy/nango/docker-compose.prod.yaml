@@ -46,6 +46,17 @@ services:
       - "traefik.http.routers.nango-api-public.tls.certresolver=letsencrypt"
       - "traefik.http.routers.nango-api-public.priority=20"
       - "traefik.http.routers.nango-api-public.service=nango-api"
+      # WebSocket del Connect UI: se conecta a la raíz (wss://api.nango.intellify.pro/)
+      # que el router catch-all (priority 10) manda al dashboard con BasicAuth y
+      # mata el handshake con 401 ("connection refused"). Este router matchea
+      # SOLO el upgrade WebSocket (header `Upgrade: websocket`) y lo pasa a
+      # nango-server SIN auth; el HTTP normal de `/` (dashboard) sigue con
+      # BasicAuth. Prioridad 30 > que dashboard (10) y public (20).
+      - "traefik.http.routers.nango-api-ws.rule=Host(`api.nango.intellify.pro`) && Header(`Upgrade`, `websocket`)"
+      - "traefik.http.routers.nango-api-ws.entrypoints=websecure"
+      - "traefik.http.routers.nango-api-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nango-api-ws.priority=30"
+      - "traefik.http.routers.nango-api-ws.service=nango-api"
       - "traefik.http.routers.nango-api-dashboard.rule=Host(`api.nango.intellify.pro`)"
       - "traefik.http.routers.nango-api-dashboard.entrypoints=websecure"
       - "traefik.http.routers.nango-api-dashboard.tls.certresolver=letsencrypt"
