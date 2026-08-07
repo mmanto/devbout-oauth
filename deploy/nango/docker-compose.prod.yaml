@@ -11,26 +11,21 @@
 #   - DNS de ambos hosts apuntando a este servidor (api.nango.* es un
 #     subdominio de segundo nivel — necesita su propio registro, no lo
 #     cubre un wildcard de un solo nivel tipo *.tudominio.pro).
-#   - NANGO_DASHBOARD_AUTH_USERS en .env (htpasswd, ver .env.example).
-#
 # api.nango.<dominio> → nango-server, separado en DOS routers por prioridad:
 # uno público (sin auth) para /oauth,/connect,/connections,/environment,
 # /integrations,/providers — lo que llama el browser del usuario final y el
 # backend consumidor, cada uno con su propio auth (Bearer secret /
-# sessionToken) — y uno catch-all con BasicAuth para el resto (dashboard,
-# signup, login). Un BasicAuth a ciegas sobre todo el Host() rompe el
-# primer grupo: el header Authorization de BasicAuth choca con el que ya
-# usan esas rutas.
+# sessionToken) — y uno catch-all para el resto (dashboard, signup, login),
+# que cae directo al login propio de Nango (sin BasicAuth en el reverse
+# proxy).
 #
 # /integrations y /providers/:provider sin auth: la Connect UI (embebida en
 # el browser del usuario final, sin la secret key) las llama directo para
 # listar las integraciones permitidas de la sesión y el detalle del
 # provider (ver @nangohq/connect-ui, llamadas GET /integrations y GET
-# /providers/:provider) — sin esto caen al router con BasicAuth, el browser
-# lo ve como fallo de CORS (401 de Traefik sin Access-Control-Allow-Origin)
-# y la Connect UI muestra "An error occurred. Please refresh your page or
-# contact our support." Si Nango agrega otra ruta pública nueva en el
-# futuro y vuelve a aparecer este síntoma, se soluciona igual: agregarla acá.
+# /providers/:provider) — se autentican con el sessionToken de una sola vez,
+# no con el admin secret. Si Nango agrega otra ruta pública nueva que la
+# Connect UI necesite, se soluciona igual: agregarla acá.
 # nango.<dominio> → nango-connect-ui, simple, sin auth (solo el shell
 # estático del popup/iframe de login).
 services:
@@ -46,24 +41,11 @@ services:
       - "traefik.http.routers.nango-api-public.tls.certresolver=letsencrypt"
       - "traefik.http.routers.nango-api-public.priority=20"
       - "traefik.http.routers.nango-api-public.service=nango-api"
-      # WebSocket del Connect UI: se conecta a la raíz (wss://api.nango.intellify.pro/)
-      # que el router catch-all (priority 10) manda al dashboard con BasicAuth y
-      # mata el handshake con 401 ("connection refused"). Este router matchea
-      # SOLO el upgrade WebSocket (header `Upgrade: websocket`) y lo pasa a
-      # nango-server SIN auth; el HTTP normal de `/` (dashboard) sigue con
-      # BasicAuth. Prioridad 30 > que dashboard (10) y public (20).
-      - "traefik.http.routers.nango-api-ws.rule=Host(`api.nango.intellify.pro`) && Header(`Upgrade`, `websocket`)"
-      - "traefik.http.routers.nango-api-ws.entrypoints=websecure"
-      - "traefik.http.routers.nango-api-ws.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.nango-api-ws.priority=30"
-      - "traefik.http.routers.nango-api-ws.service=nango-api"
       - "traefik.http.routers.nango-api-dashboard.rule=Host(`api.nango.intellify.pro`)"
       - "traefik.http.routers.nango-api-dashboard.entrypoints=websecure"
       - "traefik.http.routers.nango-api-dashboard.tls.certresolver=letsencrypt"
       - "traefik.http.routers.nango-api-dashboard.priority=10"
-      - "traefik.http.routers.nango-api-dashboard.middlewares=nango-dashboard-auth"
       - "traefik.http.routers.nango-api-dashboard.service=nango-api"
-      - "traefik.http.middlewares.nango-dashboard-auth.basicauth.users=${NANGO_DASHBOARD_AUTH_USERS}"
       - "traefik.http.services.nango-api.loadbalancer.server.port=8080"
 
   nango-connect-ui:

@@ -37,10 +37,11 @@ sibling `NANGO_SECRET_KEY` in each consumer app, not the one from `deploy/nango/
 **Production**: the Connect UI and the API need to be reachable from a real
 user's browser, not just from the host's Docker network — see
 `deploy/nango/docker-compose.prod.yaml` for exposing both behind a shared
-Traefik with public subdomains, with the dashboard behind BasicAuth and the
-consumer-facing routes (`/oauth`, `/connect`, `/connections`, `/environment`)
-left open (a blanket BasicAuth over the whole host breaks those — they already
-authenticate via `Authorization: Bearer <secret>` or a one-time session token).
+Traefik with public subdomains. The dashboard is protected by Nango's own login
+(in the catch-all router, no reverse-proxy BasicAuth), and the consumer-facing
+routes (`/oauth`, `/connect`, `/connections`, `/environment`) are open because
+they already authenticate via `Authorization: Bearer <secret>` or a one-time
+session token.
 
 ## 2. Create the integrations in Nango
 
