@@ -1,5 +1,6 @@
 """
-FastAPI router factory for Nango-backed auth + integrations.
+FastAPI router factory for Nango-backed auth + integrations, plus optional
+passkey (WebAuthn) login.
 
 Flow (frontend uses @nangohq/frontend `openConnectUI`):
   1. Frontend asks the backend for a connect session token.
@@ -12,6 +13,11 @@ Flow (frontend uses @nangohq/frontend `openConnectUI`):
 Two intents, kept on separate paths so auth requirements stay clean:
   - login  → no auth; bound to a signed login nonce.
   - email  → authenticated; bound to the current user id.
+
+Passkeys are mounted only when a `PasskeyConfig` is passed (and storage
+implements `PasskeyStorage`, see `_register_passkey_routes`): an already
+authenticated user registers Face ID / Touch ID / Windows Hello / a security
+key, and then logs in with it instead of the OAuth round-trip.
 """
 import hashlib
 import hmac
@@ -24,8 +30,17 @@ from pydantic import BaseModel
 from .config import SUPPORTED_PROVIDERS, NangoConfig
 from .identity import fetch_identity
 from .nango_client import NangoClient
+from .passkeys import (
+    PasskeyConfig,
+    PasskeyError,
+    authentication_options,
+    credential_id_of,
+    finish_authentication,
+    finish_registration,
+    registration_options,
+)
 from .state import create_login_nonce, verify_login_nonce
-from .storage import ConnectionStorage
+from .storage import ConnectionStorage, PasskeyStorage
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +60,162 @@ class _EmailFinalizeRequest(BaseModel):
     provider: str
 
 
+class _PasskeyRegisterVerifyRequest(BaseModel):
+    credential: dict
+    challengeToken: str
+    name: Optional[str] = None
+
+
+class _PasskeyLoginOptionsRequest(BaseModel):
+    username: Optional[str] = None
+
+
+class _PasskeyLoginVerifyRequest(BaseModel):
+    credential: dict
+    challengeToken: str
+
+
+def _register_passkey_routes(
+    router: APIRouter,
+    nango_config: NangoConfig,
+    passkeys: PasskeyConfig,
+    storage: PasskeyStorage,
+    get_current_user_id: Callable,
+) -> None:
+    """
+    Mount the WebAuthn (passkey) endpoints.
+
+    Registration and credential management require a logged-in user; the login
+    ceremony doesn't, since it is the login. Both ceremonies are stateless: the
+    signed challenge token returned by `*/options` travels back with the
+    assertion to `*/verify`.
+    """
+    signing_key = nango_config.state_signing_key
+
+    # ── Register a passkey (authenticated) ────────────────────────────────
+    @router.post("/passkey/register/options")
+    async def passkey_register_options(user_id: str = Depends(get_current_user_id)):
+        user = await storage.get_passkey_user(user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        existing = await storage.list_passkeys(user_id)
+        options, challenge_token = registration_options(passkeys, signing_key, user, existing)
+        return {"options": options, "challengeToken": challenge_token}
+
+    @router.post("/passkey/register/verify")
+    async def passkey_register_verify(
+        body: _PasskeyRegisterVerifyRequest,
+        user_id: str = Depends(get_current_user_id),
+    ):
+        try:
+            registered = finish_registration(
+                passkeys, signing_key, body.credential, body.challengeToken
+            )
+        except PasskeyError as exc:
+            logger.warning("Passkey register failed for user %s: %s", user_id, exc)
+            raise HTTPException(status_code=400, detail="No se pudo verificar el passkey")
+        if registered.user_id != user_id:
+            logger.warning("Passkey register: challenge belongs to another user")
+            raise HTTPException(status_code=403, detail="La ceremonia no corresponde al usuario")
+        if await storage.get_passkey(registered.credential_id) is not None:
+            raise HTTPException(status_code=409, detail="La credencial ya está registrada")
+
+        name = body.name or (
+            "Passkey sincronizada" if registered.backed_up else "Passkey de este dispositivo"
+        )
+        await storage.save_passkey(
+            user_id,
+            registered.credential_id,
+            registered.public_key,
+            registered.sign_count,
+            registered.transports,
+            name,
+        )
+        logger.info("Passkey registered for user %s (%s)", user_id, registered.device_type)
+        return {
+            "status": "registered",
+            "credentialId": registered.credential_id,
+            "name": name,
+            "deviceType": registered.device_type,
+            "backedUp": registered.backed_up,
+        }
+
+    # ── Login with a passkey (no auth) ─────────────────────────────────────
+    @router.post("/passkey/login/options")
+    async def passkey_login_options(body: _PasskeyLoginOptionsRequest):
+        # An unknown username still gets usable options (empty allowCredentials →
+        # any discoverable passkey for this RP), so this can't enumerate accounts.
+        credentials = []
+        user_id = ""
+        if body.username:
+            user = await storage.get_passkey_user_by_username(body.username)
+            if user is not None:
+                user_id = user.user_id
+                credentials = await storage.list_passkeys(user_id)
+        options, challenge_token = authentication_options(
+            passkeys, signing_key, credentials, user_id
+        )
+        return {"options": options, "challengeToken": challenge_token}
+
+    @router.post("/passkey/login/verify")
+    async def passkey_login_verify(body: _PasskeyLoginVerifyRequest):
+        try:
+            credential_id = credential_id_of(body.credential)
+        except PasskeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        stored = await storage.get_passkey(credential_id)
+        if stored is None:
+            logger.warning("Passkey login: unknown credential %s", credential_id)
+            raise HTTPException(status_code=401, detail="Passkey no reconocido")
+        try:
+            new_sign_count = finish_authentication(
+                passkeys, signing_key, body.credential, body.challengeToken, stored
+            )
+        except PasskeyError as exc:
+            logger.warning("Passkey login failed for user %s: %s", stored.user_id, exc)
+            raise HTTPException(status_code=401, detail="No se pudo verificar el passkey")
+
+        await storage.update_passkey_sign_count(credential_id, new_sign_count)
+        token = await storage.issue_app_token(stored.user_id)
+        user = await storage.get_passkey_user(stored.user_id)
+        logger.info("Login success via passkey: %s", user.username if user else stored.user_id)
+        return {
+            "token": token,
+            "provider": "passkey",
+            "username": user.username if user else "",
+            "display_name": user.display_name if user else "",
+        }
+
+    # ── Manage registered passkeys (authenticated) ─────────────────────────
+    @router.get("/passkey/credentials")
+    async def passkey_credentials(user_id: str = Depends(get_current_user_id)):
+        credentials = await storage.list_passkeys(user_id)
+        return {
+            "credentials": [
+                {
+                    "id": credential.credential_id,
+                    "name": credential.name,
+                    "transports": credential.transports,
+                    "created_at": (
+                        credential.created_at.isoformat() if credential.created_at else None
+                    ),
+                }
+                for credential in credentials
+            ]
+        }
+
+    @router.delete("/passkey/credentials/{credential_id}", status_code=204)
+    async def passkey_delete(
+        credential_id: str,
+        user_id: str = Depends(get_current_user_id),
+    ):
+        stored = await storage.get_passkey(credential_id)
+        if stored is None or stored.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Passkey no encontrado")
+        await storage.delete_passkey(user_id, credential_id)
+        logger.info("Passkey %s deleted for user %s", credential_id, user_id)
+
+
 def create_router(
     config: NangoConfig,
     storage: ConnectionStorage,
@@ -52,11 +223,22 @@ def create_router(
     providers: frozenset[str] = frozenset({"google", "microsoft"}),
     prefix: str = "/auth",
     nango_webhook_handler: Optional[Callable[[dict], Awaitable[None]]] = None,
+    passkeys: Optional[PasskeyConfig] = None,
+    passkey_storage: Optional[PasskeyStorage] = None,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["auth"])
     nango = NangoClient(config)
 
     enabled = providers & SUPPORTED_PROVIDERS
+
+    if passkeys is not None:
+        target = passkey_storage if passkey_storage is not None else storage
+        if not isinstance(target, PasskeyStorage):
+            raise ValueError(
+                "passkeys requiere un storage que implemente PasskeyStorage; "
+                f"a {type(target).__name__} le faltan métodos"
+            )
+        _register_passkey_routes(router, config, passkeys, target, get_current_user_id)
 
     def _check_provider(provider: str) -> str:
         if provider not in enabled:

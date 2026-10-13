@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "devbout-oauth"
-version = "0.2.0"
-description = "Central auth + integrations (Google/Microsoft) for Devbout apps, brokered by self-hosted Nango."
+version = "0.3.0"
+description = "Central auth + integrations (Google/Microsoft via Nango, plus WebAuthn passkeys) for Devbout apps."
 requires-python = ">=3.10"
 dependencies = [
     "python-jose[cryptography]>=3.3.0",
@@ -13,12 +13,17 @@ dependencies = [
     "httpx>=0.28.0",
     "fastapi>=0.100.0",
     "pydantic>=2.0.0",
+    # WebAuthn / passkeys (huella, rostro, llave de seguridad): la librería
+    # server-side detrás de webauthn.io.
+    "webauthn>=2.5.0",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    # Autenticador en software para tests (implementa navigator.credentials.*)
+    "soft-webauthn>=0.1.3",
 ]
 
 [tool.setuptools.packages.find]

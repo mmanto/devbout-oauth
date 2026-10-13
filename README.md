@@ -7,11 +7,14 @@ Microsoft**, delegating the entire OAuth dance and token storage/refresh to a
 provider refresh tokens — Nango custodies them and hands out fresh access tokens
 on demand.
 
+Optionally, on top of that, users can register a **passkey** (WebAuthn: Face ID,
+huella, Windows Hello, llave de seguridad) and log in with it — see §5.
+
 Consumed by other projects **via pip (git+https by tag)**:
 
 ```
 # requirements.txt
-devbout-oauth @ git+https://<your-remote>/devbout-oauth@v0.2.0
+devbout-oauth @ git+https://<your-remote>/devbout-oauth@v0.3.0
 ```
 
 ---
@@ -130,6 +133,105 @@ await auth.send_email(user_id, to="x@y.com", subject="Hi", body_html="<p>…</p>
 
 It resolves the user's connection → fresh access token (Google or Microsoft) →
 sends via Gmail API or Microsoft Graph automatically.
+
+---
+
+## 5. Log in with a passkey (rostro / huella / llave de seguridad)
+
+Opt-in, on top of the Nango flow. A user who already has an account registers a
+**passkey** and afterwards signs in with Face ID / Touch ID / Windows Hello /
+Android biometrics / a hardware key, with no OAuth round-trip.
+
+| Layer | Library |
+|-------|---------|
+| Server | [`webauthn`](https://github.com/duo-labs/webauthn) (py_webauthn) — the Python library behind [webauthn.io](https://webauthn.io) |
+| Browser | [`@simplewebauthn/browser`](https://simplewebauthn.dev) (`startRegistration` / `startAuthentication`) |
+
+Only the credential's **public** key and signature counter are stored; the
+private key never leaves the user's device. A passkey login authenticates an
+existing account — it never creates one.
+
+### Backend
+
+```python
+from devbout_oauth import PasskeyConfig, create_router
+
+router = create_router(
+    config=nango_config,
+    storage=MyStorage(),            # must also implement PasskeyStorage
+    get_current_user_id=my_auth_dependency,
+    prefix="/api/v1/auth",
+    passkeys=PasskeyConfig(
+        rp_id="gestion.ar",                # bare domain: no scheme, no port
+        rp_name="Gestion.ar",
+        origins=["https://gestion.ar"],    # every origin the frontend runs on
+    ),
+)
+```
+
+Passkeys mount only when `passkeys=` is passed, and `create_router` raises at
+startup if the storage given (or `passkey_storage=`) doesn't implement
+`PasskeyStorage`.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/passkey/register/options` | ✓ | `navigator.credentials.create()` options + signed challenge |
+| POST | `/passkey/register/verify` | ✓ | verify the attestation, store the credential |
+| POST | `/passkey/login/options` | – | `navigator.credentials.get()` options (`username` optional) |
+| POST | `/passkey/login/verify` | – | verify the assertion → app token |
+| GET | `/passkey/credentials` | ✓ | list the user's passkeys |
+| DELETE | `/passkey/credentials/{credential_id}` | ✓ | revoke one passkey |
+
+Bodies: `register/verify` → `{credential, challengeToken, name?}`;
+`login/verify` → `{credential, challengeToken}`; `login/options` → `{username?}`.
+Both `*/options` answer `{options, challengeToken}`: `options` is what the SDK
+consumes, and `challengeToken` is the signed 5-minute challenge (the same
+stateless pattern as the login nonce) that must come back with the credential.
+Omit `username` for a **usernameless** login: the browser then offers any passkey
+registered for `rp_id` and the account is resolved from the assertion.
+
+### Frontend (per consumer)
+
+```ts
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
+
+// register (user already logged in)
+const { options, challengeToken } = await api.post('/api/v1/auth/passkey/register/options')
+const credential = await startRegistration({ optionsJSON: options })
+await api.post('/api/v1/auth/passkey/register/verify', {
+  credential, challengeToken, name: 'Face ID del iPhone',
+})
+
+// login (from the sign-in screen)
+const { options, challengeToken } = await api.post('/api/v1/auth/passkey/login/options', { username })
+const credential = await startAuthentication({ optionsJSON: options })
+const { token } = await api.post('/api/v1/auth/passkey/login/verify', { credential, challengeToken })
+```
+
+### Implementing `PasskeyStorage`
+
+```python
+async def get_passkey_user(user_id) -> PasskeyUser | None          # (user_id, username, display_name)
+async def get_passkey_user_by_username(username) -> PasskeyUser | None
+async def save_passkey(user_id, credential_id, public_key, sign_count, transports, name): ...
+async def get_passkey(credential_id) -> PasskeyCredential | None
+async def list_passkeys(user_id) -> list[PasskeyCredential]
+async def update_passkey_sign_count(credential_id, sign_count): ...
+async def delete_passkey(user_id, credential_id): ...
+async def issue_app_token(user_id) -> str      # the app token for an existing user
+```
+
+`credential_id` and `public_key` are base64url strings (plain `TEXT` columns);
+`sign_count` is the WebAuthn signature counter and must be persisted on every
+login — a counter that doesn't advance past the stored one is rejected as a
+possible cloned authenticator. See `InMemoryPasskeyStorage` for a reference.
+
+### Caveats
+
+- WebAuthn requires a secure context: `https://` in production, `localhost` in
+  dev. The RP ID must be a domain — `localhost` works, IP literals don't.
+- A passkey lives in the user's browser/OS keychain and syncs (or not) per
+  vendor; `DELETE /passkey/credentials/{id}` removes only the server record.
 
 ---
 
